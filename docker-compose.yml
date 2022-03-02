@@ -1,0 +1,99 @@
+version: "3.8"
+
+x-app: &default-app
+  build:
+    context: .
+    dockerfile: ./docker/Dockerfile
+    cache_from:
+      - "consumeraffairs:latest"
+      - "*"
+  image: "consumeraffairs"
+  restart: "unless-stopped"
+  stop_grace_period: "5s"
+  volumes:
+    - ./src:/app
+  depends_on:
+    - postgres
+    - rabbit
+  networks:
+    - consumeraffairs-network
+    - consumeraffairs-proxy-network
+  env_file:
+    - ./config/.env
+
+services:
+  postgres:
+    image: postgres:alpine
+    container_name: consumeraffairs-the-eye-postgres-container
+    restart: unless-stopped
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - consumeraffairs-network
+    env_file: ./config/.env
+
+  rabbit:
+    image: rabbitmq:management-alpine
+    container_name: consumeraffairs-the-eye-rabbit-container
+    restart: unless-stopped
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    networks:
+      - consumeraffairs-network
+    env_file: ./config/.env
+
+  web:
+    <<: *default-app
+    container_name: consumeraffairs-the-eye-web-container
+    ports:
+      - "8000:8000"
+    environment:
+      COMMAND: development
+    healthcheck:
+      # We use `$$` here because:
+      # one `$` goes to shell,
+      # one `$` goes to `docker-compose.yml` escaping
+      test: |
+        /usr/bin/test $$(
+          /usr/bin/curl
+            --fail http://localhost:8000/healthcheck/?format=json
+            --write-out "%{http_code}"
+            --silent
+            --output /dev/null
+            ) -eq 200
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  worker:
+    <<: *default-app
+    container_name: consumeraffairs-the-eye-worker-container
+    environment:
+        COMMAND: worker
+
+  loadtest:
+    image: locustio/locust:latest
+    ports:
+     - "8089:8089"
+    volumes:
+      - ./src/tests:/mnt/locust
+    command: --config /mnt/locust/locust.conf
+    depends_on:
+      - web
+      - worker
+    networks:
+      - consumeraffairs-network
+      - consumeraffairs-proxy-network
+
+networks:
+  # Network for your proxy server and application to connect them,
+  # do not use it for anything else!
+  consumeraffairs-proxy-network:
+
+  # Network for your internals, use it by default:
+  consumeraffairs-network:
+
+volumes:
+  pgdata:
+  rabbitmq-data:
